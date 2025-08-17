@@ -44,7 +44,12 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_VISION_2_SEQ_MAPPIN
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput, speed_metrics
 from transformers.debug_utils import DebugOption
-from transformers.utils import is_torch_tpu_available
+
+try:
+    from transformers.utils import is_torch_tpu_available
+except ImportError:
+    def is_torch_tpu_available():
+        return False
 
 from ..import_utils import is_peft_available, is_wandb_available
 from ..models import PreTrainedModelWrapper, create_reference_model
@@ -352,7 +357,7 @@ class BiPOTrainer(Trainer):
             self.processor = tokenizer
             self.tokenizer = tokenizer.tokenizer  # tokenizer is actually a processor at this point
         else:
-            self.tokenizer = tokenizer
+            self.model.tokenizer = tokenizer
 
         self.is_peft_model = is_peft_available() and isinstance(model, PeftModel)
         if model_adapter_name is not None:
@@ -439,7 +444,7 @@ class BiPOTrainer(Trainer):
             args.label_pad_token_id = label_pad_token_id
         if data_collator is None:
             data_collator = DPODataCollatorWithPadding(
-                pad_token_id=self.tokenizer.pad_token_id,
+                pad_token_id=self.model.tokenizer.pad_token_id,
                 label_pad_token_id=args.label_pad_token_id,
                 is_encoder_decoder=self.is_encoder_decoder,
             )
@@ -475,7 +480,7 @@ class BiPOTrainer(Trainer):
                 "You passed `padding_value` to the DPOTrainer, the value you passed will override the one in the `DPOConfig`."
             )
             args.padding_value = padding_value
-        self.padding_value = args.padding_value if padding_value is not None else self.tokenizer.pad_token_id
+        self.padding_value = args.padding_value if padding_value is not None else self.model.tokenizer.pad_token_id
         self.max_prompt_length = args.max_prompt_length
         if truncation_mode != "keep_end":
             warnings.warn(
@@ -761,8 +766,8 @@ class BiPOTrainer(Trainer):
             if not isinstance(prompt_input_ids, list):  # llava processor returns tensors
                 prompt_input_ids = prompt_input_ids.tolist()
         else:
-            full_tokenized = self.tokenizer(prompt + answer, add_special_tokens=False)
-            prompt_input_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            full_tokenized = self.model.tokenizer(prompt + answer, add_special_tokens=False)
+            prompt_input_ids = self.model.tokenizer(prompt, add_special_tokens=False)["input_ids"]
 
         answer_input_ids = full_tokenized["input_ids"][len(prompt_input_ids) :]
         answer_attention_mask = full_tokenized["attention_mask"][len(prompt_input_ids) :]
@@ -845,7 +850,7 @@ class BiPOTrainer(Trainer):
                     prompt_tokens["input_ids"] = prompt_tokens["input_ids"].tolist()
                     prompt_tokens["attention_mask"] = prompt_tokens["attention_mask"].tolist()
             else:
-                prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)
+                prompt_tokens = self.model.tokenizer(prompt, add_special_tokens=False)
 
             prompt_tokens = {f"prompt_{k}": v for k, v in prompt_tokens.items()}
 
@@ -882,7 +887,7 @@ class BiPOTrainer(Trainer):
                 )
 
             # add BOS token to head of prompt. Avoid adding if it's already there
-            bos_token_id = self.tokenizer.bos_token_id
+            bos_token_id = self.model.tokenizer.bos_token_id
             if prompt_len_input_ids == 0 or bos_token_id != prompt_tokens["prompt_input_ids"][0]:
                 prompt_tokens["prompt_input_ids"] = [bos_token_id] + prompt_tokens["prompt_input_ids"]
                 prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
@@ -894,7 +899,7 @@ class BiPOTrainer(Trainer):
                 rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
 
             # add EOS token to end of answer. Avoid adding if it's already there
-            eos_token_id = self.tokenizer.eos_token_id
+            eos_token_id = self.model.tokenizer.eos_token_id
             if len(chosen_tokens["input_ids"]) == 0 or eos_token_id != chosen_tokens["input_ids"][-1]:
                 chosen_tokens["input_ids"].append(eos_token_id)
                 chosen_tokens["attention_mask"].append(1)
@@ -949,13 +954,13 @@ class BiPOTrainer(Trainer):
                     batch[f"{k}{type_key}"] = tokens
 
         else:
-            chosen_tokens = self.tokenizer(
+            chosen_tokens = self.model.tokenizer(
                 chosen, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            rejected_tokens = self.tokenizer(
+            rejected_tokens = self.model.tokenizer(
                 rejected, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            prompt_tokens = self.tokenizer(
+            prompt_tokens = self.model.tokenizer(
                 prompt, truncation=True, max_length=self.max_prompt_length, add_special_tokens=True
             )
 
@@ -1489,7 +1494,7 @@ class BiPOTrainer(Trainer):
                 attention_mask=batch["prompt_attention_mask"],
                 max_length=self.max_length,
                 do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
+                pad_token_id=self.model.tokenizer.pad_token_id,
             )
 
             # if reference_output in batch use that otherwise use the reference model
@@ -1503,7 +1508,7 @@ class BiPOTrainer(Trainer):
                             attention_mask=batch["prompt_attention_mask"],
                             max_length=self.max_length,
                             do_sample=True,
-                            pad_token_id=self.tokenizer.pad_token_id,
+                            pad_token_id=self.model.tokenizer.pad_token_id,
                         )
                 else:
                     reference_output = self.ref_model.generate(
@@ -1511,14 +1516,14 @@ class BiPOTrainer(Trainer):
                         attention_mask=batch["prompt_attention_mask"],
                         max_length=self.max_length,
                         do_sample=True,
-                        pad_token_id=self.tokenizer.pad_token_id,
+                        pad_token_id=self.model.tokenizer.pad_token_id,
                     )
 
-        policy_output = pad_to_length(policy_output, self.max_length, self.tokenizer.pad_token_id)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
+        policy_output = pad_to_length(policy_output, self.max_length, self.model.tokenizer.pad_token_id)
+        policy_output_decoded = self.model.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
 
-        reference_output = pad_to_length(reference_output, self.max_length, self.tokenizer.pad_token_id)
-        reference_output_decoded = self.tokenizer.batch_decode(reference_output, skip_special_tokens=True)
+        reference_output = pad_to_length(reference_output, self.max_length, self.model.tokenizer.pad_token_id)
+        reference_output_decoded = self.model.tokenizer.batch_decode(reference_output, skip_special_tokens=True)
 
         return policy_output_decoded, reference_output_decoded
 

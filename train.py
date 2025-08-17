@@ -11,7 +11,6 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 
 from trl import BiPOTrainer, DPOConfig
-from fastchat.conversation import get_conv_template
 
 SYSTEM_PROMPT = "You are a helpful, honest and concise assistant."
 
@@ -124,12 +123,15 @@ def get_data(num_proc=1, behavior='power-seeking', train=True, template_name='ll
     original_columns = dataset.column_names
     def return_prompt_and_responses(samples) -> Dict[str, str]:
         prompt = []
+        system_prompt = "You are a helpful assistant and a news-article summarizer. You help compare summaries to help me with my records. You respond with only '1' or '2' and no other text."
         for question in samples["question"]:
-            conv = get_conv_template(template_name)
-            conv.set_system_message(SYSTEM_PROMPT)
-            conv.append_message(conv.roles[0], question)
-            conv.append_message(conv.roles[1], None)
-            prompt.append(conv.get_prompt())
+            # Use tokenizer's chat_template for prompt formatting
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": None}
+            ]
+            prompt.append(tokenizer.apply_chat_template(messages, tokenize=False))
         return {
             "prompt": prompt,
             "chosen": [' ' + s for s in samples["matching"]],
@@ -147,32 +149,52 @@ if __name__ == "__main__":
     parser = HfArgumentParser(ScriptArguments)
     script_args = parser.parse_args_into_dataclasses()[0]
     set_seed(seed=11)
-    if script_args.model_name_or_path not in ['meta-llama/Llama-2-7b-chat-hf', 'mistralai/Mistral-7B-Instruct-v0.2']:
-        print(f'{script_args.model_name_or_path} is not in supported model list. We support meta-llama/Llama-2-7b-chat-hf and mistralai/Mistral-7B-Instruct-v0.2')
+    if script_args.model_name_or_path not in [
+        'meta-llama/Llama-2-7b-chat-hf',
+        'mistralai/Mistral-7B-Instruct-v0.2',
+        'meta-llama/Meta-Llama-3.1-8B-Instruct'
+    ]:
+        print(f'{script_args.model_name_or_path} is not in supported model list. We support meta-llama/Llama-2-7b-chat-hf, mistralai/Mistral-7B-Instruct-v0.2, and meta-llama/Meta-Llama-3.1-8B-Instruct')
     if script_args.model_name_or_path == 'meta-llama/Llama-2-7b-chat-hf':
         template_name = 'llama-2'
     elif script_args.model_name_or_path == 'mistralai/Mistral-7B-Instruct-v0.2':
         template_name = 'mistral'
+    elif script_args.model_name_or_path == 'meta-llama/Meta-Llama-3.1-8B-Instruct':
+        template_name = 'llama-3'
     print('[Behavior:] ', script_args.behavior, '[Layer:] ', script_args.layer, '[Model:] ', script_args.model_name_or_path)
 
-    # 1. load a pretrained model
-    model = AutoModelForCausalLM.from_pretrained(
-        script_args.model_name_or_path,
-        low_cpu_mem_usage=True,
-    )
-    model.model.layers[script_args.layer] = BlockWrapper(model.model.layers[script_args.layer])
-    model.config.use_cache = False
+    from transformers import AutoConfig
 
+    # Patch rope_scaling for Llama 3.1 if needed
+    if script_args.model_name_or_path == 'meta-llama/Meta-Llama-3.1-8B-Instruct':
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            script_args.model_name_or_path,
+            low_cpu_mem_usage=True,
+        )
+        model.model.layers[script_args.layer] = BlockWrapper(model.model.layers[script_args.layer])
+        model.config.use_cache = False
+        model_ref = AutoModelForCausalLM.from_pretrained(
+            script_args.model_name_or_path,
+            low_cpu_mem_usage=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            script_args.model_name_or_path,
+            low_cpu_mem_usage=True,
+        )
+        model.model.layers[script_args.layer] = BlockWrapper(model.model.layers[script_args.layer])
+        model.config.use_cache = False
+        model_ref = AutoModelForCausalLM.from_pretrained(
+            script_args.model_name_or_path,
+            low_cpu_mem_usage=True,
+        )
     if script_args.ignore_bias_buffers:
         # torch distributed hack
         model._ddp_params_and_buffers_to_ignore = [
             name for name, buffer in model.named_buffers() if buffer.dtype == torch.bool
         ]
 
-    model_ref = AutoModelForCausalLM.from_pretrained(
-        script_args.model_name_or_path,
-        low_cpu_mem_usage=True,
-    )
     print('-----------------------------')
     print(script_args.model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(script_args.model_name_or_path)

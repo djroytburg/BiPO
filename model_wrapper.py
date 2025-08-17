@@ -6,7 +6,6 @@ import torch as t
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tok import tokenize
 from typing import Tuple, Optional
-from fastchat.conversation import get_conv_template
 
 class AttnWrapper(t.nn.Module):
     """
@@ -134,40 +133,42 @@ class ModelWrapper:
             layer.save_internal_decodings = value
 
     def generate_text(self, prompt: str, max_new_tokens: int = 50) -> str:
-        tokens = tokenize(
-            self.tokenizer,
-            self.system_prompt,
-            self.model_name,
-            [(prompt, None)],
-        )
-        tokens = t.tensor(tokens).unsqueeze(0).to(self.device)
+        # Use tokenizer's chat_template for prompt formatting
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": None}
+        ]
+        chat_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False)
+        tokens = self.tokenizer(chat_prompt, return_tensors="pt").input_ids.to(self.device)
         return self.generate(tokens, max_new_tokens=max_new_tokens)
 
-    
     def generate_text_with_conversation_history(
         self, history: Tuple[str, Optional[str]], max_new_tokens=50
-    ) -> str:       
-        tokens = tokenize(
-            self.tokenizer,
-            self.system_prompt,
-            self.model_name,
-            history,
-            no_final_eos=True,
-        )
-        tokens = t.tensor(tokens).unsqueeze(0).to(self.device)
+    ) -> str:
+        # Use chat_template for conversation history
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for user_msg, assistant_msg in history:
+            messages.append({"role": "user", "content": user_msg})
+            if assistant_msg is not None:
+                messages.append({"role": "assistant", "content": assistant_msg})
+        messages.append({"role": "assistant", "content": None})
+        chat_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False)
+        tokens = self.tokenizer(chat_prompt, return_tensors="pt").input_ids.to(self.device)
         return self.generate(tokens, max_new_tokens=max_new_tokens)
 
     def generate_text_do_sample_with_conversation_history(
         self, history: Tuple[str, Optional[str]], max_new_tokens=50
-    ) -> str:       
-        tokens = tokenize(
-            self.tokenizer,
-            self.system_prompt,
-            self.model_name,
-            history,
-            no_final_eos=True,
-        )
-        tokens = t.tensor(tokens).unsqueeze(0).to(self.device)
+    ) -> str:
+        # Use chat_template for conversation history
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for user_msg, assistant_msg in history:
+            messages.append({"role": "user", "content": user_msg})
+            if assistant_msg is not None:
+                messages.append({"role": "assistant", "content": assistant_msg})
+        messages.append({"role": "assistant", "content": None})
+        chat_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False)
+        tokens = self.tokenizer(chat_prompt, return_tensors="pt").input_ids.to(self.device)
         return self.generate_do_sample(tokens, max_new_tokens=max_new_tokens)
     
     def generate(self, tokens, max_new_tokens=50):
